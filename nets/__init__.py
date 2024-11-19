@@ -23,13 +23,16 @@ class Net(torch.nn.Module):
             "effnetv2_s": effnetv2_s,
             "mobilenetv2": mobilenetv2,
             "mobilenetv3_s": MobileNetV3_Small,
-            "mobilenetv3_l": MobileNetV3_Large
+            "mobilenetv3_l": MobileNetV3_Large,
+            "pretrain_efficientnetv2": EfficientNetV2Backbone,
         }
 
         self.optimizers_list = {
             "SGD": torch.optim.SGD,
             "Adam": torch.optim.Adam,
+            "AdamW": torch.optim.AdamW,
         }
+
         self.conf = conf
         if self.conf['System']['GPU']:
             torch.cuda.manual_seed_all(0)
@@ -42,15 +45,21 @@ class Net(torch.nn.Module):
         self.word = self.conf['Model']['Word']
         if self.backbone in self.backbones_list:
             test_cnn = self.backbones_list[self.backbone](nc=1)
-            x = torch.randn(1, 1, self.resize[1], self.resize[1])
+            x = torch.randn(1, 1, 64, 170)
+            print("Testing input shape: ", x.shape)
             test_features = test_cnn(x)
+            print("Testing output shape: ", test_features.shape)
+            #check if any nan in the output
+            if torch.isnan(test_features).any():
+                raise Exception("There are nan in the output of the backbone!")
             del x
             del test_cnn
             if self.word:
                 self.out_size = test_features.size()[1] * test_features.size()[2] * test_features.size()[3]
             else:
                 self.out_size = test_features.size()[1] * test_features.size()[2]
-            self.cnn = self.backbones_list[self.backbone](nc=self.image_channel)
+            self.cnn = self.backbones_list[self.backbone](nc=1)
+            print("Output size: ", self.out_size)
         else:
             raise Exception("{} is not found in backbones! backbone list : {}".format(self.backbone, json.dumps(
                 list(self.backbones_list.keys()))))
@@ -65,7 +74,6 @@ class Net(torch.nn.Module):
 
             self.loss = torch.nn.CTCLoss(blank=0, reduction='mean')
             self.fc = torch.nn.Linear(in_features=self.out_size * 2, out_features=self.charset_len)
-
         else:
             self.lstm = None
             self.loss = torch.nn.CrossEntropyLoss()
@@ -84,8 +92,10 @@ class Net(torch.nn.Module):
         if self.optim in self.optimizers_list:
             if self.optim == "SGD":
                 self.optimizer = self.optimizers_list[self.optim](self.paramters, lr=self.lr, momentum=0.9)
-            else:
+            elif self.optim == "Adam":
                 self.optimizer = self.optimizers_list[self.optim](self.paramters, lr=self.lr, betas=(0.9, 0.99))
+            else:
+                self.optimizer = torch.optim.AdamW(self.paramters, lr=self.lr)
         else:
             raise Exception("{} is not found in optimizers! optimizers list : {}".format(self.optim, json.dumps(
                 list(self.optimizers_list.keys()))))
@@ -103,6 +113,7 @@ class Net(torch.nn.Module):
 
     def get_features(self, inputs):
         outputs = self.cnn(inputs)
+        #check if any nan in the output
         if not self.word:
             outputs = outputs.permute(3, 0, 1, 2)
             w, b, c, h = outputs.shape
@@ -116,6 +127,12 @@ class Net(torch.nn.Module):
             outputs = outputs.view(outputs.size(0), -1)
             outputs = self.fc(outputs)
         return outputs
+
+    def trainer_debug(self, inputs, labels, labels_length):
+        with torch.autograd.set_detect_anomaly(True):
+            outputs = self.get_features(inputs)
+            loss, lr = self.get_loss(outputs, labels, labels_length)
+            return loss, lr
 
     def trainer(self, inputs, labels, labels_length):
         outputs = self.get_features(inputs)
@@ -182,6 +199,152 @@ class Net(torch.nn.Module):
         loss.backward()
         self.optimizer.step()
 
+        return loss.item(), self.scheduler.state_dict()['_last_lr'][-1]
+
+
+    def get_loss_debug(self, predict, labels, labels_length):
+        # Check for NaNs in predict before any computation
+        if torch.isnan(predict).any():
+            print("NaN detected in 'predict' before any computation.")
+            raise Exception("NaN detected in 'predict' before any computation.")
+        else:
+            print("'predict' is free of NaNs before any computation.")
+            print(f"'predict' shape: {predict.shape}")
+            print(f"'predict' dtype: {predict.dtype}")
+            # Print statistics of predict
+            print(
+                f"'predict' stats: min={predict.min()}, max={predict.max()}, mean={predict.mean()}, std={predict.std()}")
+            # Optionally print a small sample of predict
+            print(f"'predict' sample: {predict.flatten()[:10]}")
+
+        # Ensure labels is a tensor and not a Variable (deprecated)
+        labels = labels.clone()
+
+        # Check for NaNs in labels
+        if torch.isnan(labels).any():
+            print("NaN detected in 'labels' before any computation.")
+            raise Exception("NaN detected in 'labels' before any computation.")
+        else:
+            print("'labels' is free of NaNs before any computation.")
+            print(f"'labels' shape: {labels.shape}")
+            print(f"'labels' dtype: {labels.dtype}")
+            # Print labels
+            print(f"'labels': {labels}")
+            print(f"'labels' min: {labels.min()}, max: {labels.max()}")
+
+        if self.word:
+            # Move labels to the correct device if necessary
+            labels_cuda = labels.long().cuda() if not labels.is_cuda else labels.long()
+
+            # Check for NaNs in labels after moving to CUDA
+            if torch.isnan(labels_cuda).any():
+                print("NaN detected in 'labels' after moving to CUDA.")
+                raise Exception("NaN detected in 'labels' after moving to CUDA.")
+            else:
+                print("'labels' is free of NaNs after moving to CUDA.")
+
+            loss = self.loss(predict, labels_cuda)
+
+            # Check for NaNs in loss
+            if torch.isnan(loss).any():
+                print("NaN detected in 'loss' after computing loss for 'word' mode.")
+                raise Exception("NaN detected in 'loss' after computing loss for 'word' mode.")
+            else:
+                print("'loss' is free of NaNs after computing loss for 'word' mode.")
+
+        else:
+            # Print the shape and dtype of predict before log_softmax
+            print(f"'predict' shape before log_softmax: {predict.shape}, dtype: {predict.dtype}")
+
+            log_predict = predict.log_softmax(2)
+
+            # Check for NaNs in log_predict
+            if torch.isnan(log_predict).any():
+                print("NaN detected in 'log_predict' after log_softmax.")
+                raise Exception("NaN detected in 'log_predict' after log_softmax.")
+            else:
+                print("'log_predict' is free of NaNs after log_softmax.")
+                print(f"'log_predict' shape: {log_predict.shape}")
+                print(f"'log_predict' dtype: {log_predict.dtype}")
+                # Print statistics of log_predict
+                print(
+                    f"'log_predict' stats: min={log_predict.min()}, max={log_predict.max()}, mean={log_predict.mean()}, std={log_predict.std()}")
+                # Optionally print a small sample of log_predict
+                print(f"'log_predict' sample: {log_predict.flatten()[:10]}")
+
+            seq_len = torch.IntTensor([log_predict.shape[0]] * log_predict.shape[1])
+            print(f"seq_len: {seq_len}")
+
+            # Check for NaNs in seq_len
+            if torch.isnan(seq_len.float()).any():
+                print("NaN detected in 'seq_len'.")
+                raise Exception("NaN detected in 'seq_len'.")
+            else:
+                print("'seq_len' is free of NaNs.")
+                print(f"'seq_len' values: {seq_len}")
+
+            # Check for NaNs in labels_length
+            if torch.isnan(labels_length.float()).any():
+                print("NaN detected in 'labels_length'.")
+                raise Exception("NaN detected in 'labels_length'.")
+            else:
+                print("'labels_length' is free of NaNs.")
+                print(f"'labels_length': {labels_length}")
+                print(f"'labels_length' dtype: {labels_length.dtype}")
+
+            # Move labels to CPU if necessary (since log_predict is on CPU)
+            if labels.is_cuda:
+                labels_cpu = labels.cpu()
+            else:
+                labels_cpu = labels
+
+            # Check for NaNs in labels after moving to CPU
+            if torch.isnan(labels_cpu).any():
+                print("NaN detected in 'labels' after moving to CPU.")
+                raise Exception("NaN detected in 'labels' after moving to CPU.")
+            else:
+                print("'labels' is free of NaNs after moving to CPU.")
+                print(f"'labels' after moving to CPU: {labels_cpu}")
+                print(f"'labels_cpu' dtype: {labels_cpu.dtype}")
+
+            # Print predict and labels as necessary
+            print(
+                f"'predict' stats: min={predict.min()}, max={predict.max()}, mean={predict.mean()}, std={predict.std()}")
+            print(
+                f"'log_predict' stats: min={log_predict.min()}, max={log_predict.max()}, mean={log_predict.mean()}, std={log_predict.std()}")
+
+            # Compute loss
+            loss = self.loss(log_predict.cpu(), labels_cpu, seq_len, labels_length)
+
+            # Check for NaNs in loss
+            if torch.isnan(loss).any():
+                print("NaN detected in 'loss' after computing loss for non-'word' mode.")
+                raise Exception("NaN detected in 'loss' after computing loss for non-'word' mode.")
+            else:
+                print("'loss' is free of NaNs after computing loss for non-'word' mode.")
+
+        # Check for NaNs in loss before backward
+        if torch.isnan(loss).any():
+            print("NaN detected in 'loss' before backward pass.")
+            raise Exception("NaN detected in 'loss' before backward pass.")
+        else:
+            print("'loss' is free of NaNs before backward pass.")
+
+        self.optimizer.zero_grad()
+        loss.backward()
+
+        # After backward, check gradients for NaNs
+        for name, param in self.cnn.named_parameters():
+            if param.grad is not None:
+                if torch.isnan(param.grad).any():
+                    print(f"NaN detected in gradients of parameter '{name}'.")
+                    raise Exception(f"NaN detected in gradients of parameter '{name}'.")
+                else:
+                    print(f"Gradients of parameter '{name}' are free of NaNs.")
+
+        self.optimizer.step()
+
+        exit(0)
         return loss.item(), self.scheduler.state_dict()['_last_lr'][-1]
 
     def save_model(self, path, net):

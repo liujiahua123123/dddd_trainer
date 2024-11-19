@@ -1,0 +1,2 @@
+from .pretrain_efficientnetv2 import EfficientNetV2Backbone
+

@@ -3,4 +3,6 @@ loguru
 pyyaml
 tqdm
 numpy
-pillow=9.5.0
+pillow==9.5.0
+timm
+onnx
