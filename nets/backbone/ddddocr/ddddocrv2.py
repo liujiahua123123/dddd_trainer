@@ -5,15 +5,15 @@ import torch
 import torch.nn as nn
 
 
-class DdddOcr(nn.Module):
+class DdddOcrV2(nn.Module):
     def __init__(self, nc=3, leakyRelu=False):
-        super(DdddOcr, self).__init__()
+        super(DdddOcrV2, self).__init__()
         # assert imgH % 16 == 0, 'imgH has to be a multiple of 16'
 
         ks = [3, 3, 3, 3, 3, 3, 2]
         ps = [1, 1, 1, 1, 1, 1, 0]
         ss = [1, 1, 1, 1, 1, 1, 1]
-        nm = [16, 32, 64, 64, 128, 128, 128]
+        nm = [16, 32, 64, 64, 128, 256, 128]
 
         cnn = nn.Sequential()
 
@@ -50,11 +50,11 @@ class DdddOcr(nn.Module):
         return self.cnn(input)
 
 def test():
-    net = DdddOcr(1)
+    net = DdddOcrV2(1)
     x = torch.randn(1, 1, 64, 64)
+    y = net(x)
     #print total num of parameters
     print(sum(p.numel() for p in net.parameters()))
-    y = net(x)
     print(y.size())
 
 if __name__ == '__main__':

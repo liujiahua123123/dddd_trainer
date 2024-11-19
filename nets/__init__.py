@@ -17,6 +17,8 @@ class Net(torch.nn.Module):
 
         self.backbones_list = {
             "ddddocr": DdddOcr,
+            "ddddocrv1": DdddOcr,
+            "ddddocrv2": DdddOcrV2,
             "effnetv2_l": effnetv2_l,
             "effnetv2_m": effnetv2_m,
             "effnetv2_xl": effnetv2_xl,
@@ -45,7 +47,7 @@ class Net(torch.nn.Module):
         self.word = self.conf['Model']['Word']
         if self.backbone in self.backbones_list:
             test_cnn = self.backbones_list[self.backbone](nc=1)
-            x = torch.randn(1, 1, 64, 170)
+            x = torch.randn(1, 1, self.resize[1], self.resize[1])
             print("Testing input shape: ", x.shape)
             test_features = test_cnn(x)
             print("Testing output shape: ", test_features.shape)
